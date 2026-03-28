@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>URL - Rust Cookbook</title>
+        <title>Actor Pattern - Rust Cookbook</title>
 
 
         <!-- Custom HTML head -->
@@ -130,7 +130,7 @@
                         <a href="https://github.com/rust-lang-nursery/rust-cookbook" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/rust-lang-nursery/rust-cookbook/edit/master/src/web/url.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/rust-lang-nursery/rust-cookbook/edit/master/src/concurrency/actor.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -159,130 +159,167 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="uniform-resource-location"><a class="header" href="#uniform-resource-location">Uniform Resource Location</a></h1>
-<h2 id="parse-a-url-from-a-string-to-a-url-type"><a class="header" href="#parse-a-url-from-a-string-to-a-url-type">Parse a URL from a string to a <code>Url</code> type</a></h2>
-<p><a href="https://docs.rs/url/"><img src="https://img.shields.io/crates/v/url.svg?label=url" alt="url-badge" /></a> <a href="https://crates.io/categories/network-programming"><img src="https://img.shields.io/badge/net--x.svg?style=social" alt="cat-net-badge" /></a></p>
-<p>The <a href="https://docs.rs/url/*/url/struct.Url.html#method.parse"><code>parse</code></a> method from the <code>url</code> crate validates and parses a <code>&amp;str</code> into a
-<a href="https://docs.rs/url/*/url/struct.Url.html"><code>Url</code></a> struct. The input string may be malformed so this method returns
-<code>Result&lt;Url, ParseError&gt;</code>.</p>
-<p>Once the URL has been parsed, it can be used with all of the methods in the
-<code>Url</code> type.</p>
-<pre><pre class="playground"><code class="language-rust edition2018">use url::{Url, ParseError};
+                        <h1 id="actor-pattern"><a class="header" href="#actor-pattern">Actor Pattern</a></h1>
+<h2 id="actor-pattern-with-tokio-handleactormessage"><a class="header" href="#actor-pattern-with-tokio-handleactormessage">Actor Pattern with Tokio (Handle/Actor/Message)</a></h2>
+<p><a href="https://docs.rs/tokio/"><img src="https://img.shields.io/crates/v/tokio.svg?label=tokio" alt="tokio-badge" /></a> <a href="https://crates.io/categories/concurrency"><img src="https://img.shields.io/badge/concurrency--x.svg?style=social" alt="cat-concurrency-badge" /></a> <a href="https://crates.io/categories/rust-patterns"><img src="https://img.shields.io/badge/rust_patterns--x.svg?style=social" alt="cat-rust-patterns-badge" /></a></p>
+<p>A common pattern for managing shared mutable state without <code>Arc&lt;Mutex&lt;T&gt;&gt;</code> is the
+actor pattern, popularized by <a href="https://ryhl.io/blog/actors-with-tokio/">Alice Ryhl</a>. An <strong>actor</strong> is a struct that owns its
+data and runs inside a single spawned task. A clonable <strong>handle</strong> holds an
+<a href="https://docs.rs/tokio/latest/tokio/sync/mpsc/struct.Sender.html"><code>mpsc::Sender</code></a> and is the public API. <strong>Messages</strong> are an enum describing every
+command the actor can process.</p>
+<p>Because only one task ever accesses the data, there is no locking. Request–response
+pairs use a <a href="https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html"><code>oneshot</code></a> channel embedded in the message variant.</p>
+<pre><pre class="playground"><code class="language-rust edition2021">use tokio::sync::{mpsc, oneshot};
 
-fn main() -&gt; Result&lt;(), ParseError&gt; {
-    let s = "https://github.com/rust-lang/rust/issues?labels=E-easy&amp;state=open";
-
-    let parsed = Url::parse(s)?;
-    println!("The path part of the URL is: {}", parsed.path());
-
-    Ok(())
-}</code></pre></pre>
-<h2 id="create-a-base-url-by-removing-path-segments"><a class="header" href="#create-a-base-url-by-removing-path-segments">Create a base URL by removing path segments</a></h2>
-<p><a href="https://docs.rs/url/"><img src="https://img.shields.io/crates/v/url.svg?label=url" alt="url-badge" /></a> <a href="https://crates.io/categories/network-programming"><img src="https://img.shields.io/badge/net--x.svg?style=social" alt="cat-net-badge" /></a></p>
-<p>A base URL includes a protocol and a domain.  Base URLs have no folders,
-files or query strings.  Each of those items are stripped out of the given
-URL.  <a href="https://docs.rs/url/*/url/struct.PathSegmentsMut.html#method.clear"><code>PathSegmentsMut::clear</code></a> removes paths and <a href="https://docs.rs/url/*/url/struct.Url.html#method.set_query"><code>Url::set_query</code></a> removes
-query string.</p>
-<pre><pre class="playground"><code class="language-rust edition2021">use anyhow::{Result, anyhow};
-use url::Url;
-
-fn main() -&gt; Result&lt;()&gt; {
-    let full = "https://github.com/rust-lang/cargo?asdf";
-
-    let url = Url::parse(full)?;
-    let base = base_url(url)?;
-
-    assert_eq!(base.as_str(), "https://github.com/");
-    println!("The base of the URL is: {}", base);
-
-    Ok(())
+// The Message enum represents commands sent to the actor.
+enum Message {
+    UpdateLocation {
+        driver_id: u32,
+        lat: f64,
+        lng: f64,
+    },
+    GetDriverStatus {
+        driver_id: u32,
+        respond_to: oneshot::Sender&lt;Option&lt;DriverStatus&gt;&gt;,
+    },
 }
 
-fn base_url(mut url: Url) -&gt; Result&lt;Url&gt; {
-    match url.path_segments_mut() {
-        Ok(mut path) =&gt; {
-            path.clear();
-        }
-        Err(_) =&gt; {
-            return Err(anyhow!("Cannot be a base URL"));
+#[derive(Debug, Clone)]
+struct DriverStatus {
+    driver_id: u32,
+    lat: f64,
+    lng: f64,
+    update_count: u64,
+}
+
+// The Actor: a struct that owns data and lives inside a spawned task.
+// No Arc&lt;Mutex&gt; needed—only one task accesses the data.
+struct DriverActor {
+    receiver: mpsc::Receiver&lt;Message&gt;,
+    drivers: std::collections::HashMap&lt;u32, DriverStatus&gt;,
+}
+
+impl DriverActor {
+    fn new(receiver: mpsc::Receiver&lt;Message&gt;) -&gt; Self {
+        Self {
+            receiver,
+            drivers: std::collections::HashMap::new(),
         }
     }
 
-    url.set_query(None);
+    async fn run(&amp;mut self) {
+        while let Some(msg) = self.receiver.recv().await {
+            self.handle_message(msg);
+        }
+    }
 
-    Ok(url)
-}</code></pre></pre>
-<h2 id="create-new-urls-from-a-base-url"><a class="header" href="#create-new-urls-from-a-base-url">Create new URLs from a base URL</a></h2>
-<p><a href="https://docs.rs/url/"><img src="https://img.shields.io/crates/v/url.svg?label=url" alt="url-badge" /></a> <a href="https://crates.io/categories/network-programming"><img src="https://img.shields.io/badge/net--x.svg?style=social" alt="cat-net-badge" /></a></p>
-<p>The <a href="https://docs.rs/url/*/url/struct.Url.html#method.join"><code>join</code></a> method creates a new URL from a base and relative path.</p>
-<pre><pre class="playground"><code class="language-rust edition2018">use url::{Url, ParseError};
-
-fn main() -&gt; Result&lt;(), ParseError&gt; {
-    let path = "/rust-lang/cargo";
-
-    let gh = build_github_url(path)?;
-
-    assert_eq!(gh.as_str(), "https://github.com/rust-lang/cargo");
-    println!("The joined URL is: {}", gh);
-
-    Ok(())
+    fn handle_message(&amp;mut self, msg: Message) {
+        match msg {
+            Message::UpdateLocation {
+                driver_id,
+                lat,
+                lng,
+            } =&gt; {
+                let status = self
+                    .drivers
+                    .entry(driver_id)
+                    .or_insert(DriverStatus {
+                        driver_id,
+                        lat: 0.0,
+                        lng: 0.0,
+                        update_count: 0,
+                    });
+                status.lat = lat;
+                status.lng = lng;
+                status.update_count += 1;
+            }
+            Message::GetDriverStatus {
+                driver_id,
+                respond_to,
+            } =&gt; {
+                let status = self.drivers.get(&amp;driver_id).cloned();
+                // Ignore send errors if the caller dropped the receiver.
+                let _ = respond_to.send(status);
+            }
+        }
+    }
 }
 
-fn build_github_url(path: &amp;str) -&gt; Result&lt;Url, ParseError&gt; {
-    const GITHUB: &amp;'static str = "https://github.com";
+// The Handle: a clonable struct that holds an mpsc::Sender.
+// This is what you pass around the application.
+#[derive(Clone)]
+struct DriverHandle {
+    sender: mpsc::Sender&lt;Message&gt;,
+}
 
-    let base = Url::parse(GITHUB).expect("hardcoded URL is known to be valid");
-    let joined = base.join(path)?;
+impl DriverHandle {
+    fn new() -&gt; Self {
+        let (sender, receiver) = mpsc::channel(32);
+        let mut actor = DriverActor::new(receiver);
+        tokio::spawn(async move { actor.run().await });
+        Self { sender }
+    }
 
-    Ok(joined)
-}</code></pre></pre>
-<h2 id="extract-the-url-origin-scheme--host--port"><a class="header" href="#extract-the-url-origin-scheme--host--port">Extract the URL origin (scheme / host / port)</a></h2>
-<p><a href="https://docs.rs/url/"><img src="https://img.shields.io/crates/v/url.svg?label=url" alt="url-badge" /></a> <a href="https://crates.io/categories/network-programming"><img src="https://img.shields.io/badge/net--x.svg?style=social" alt="cat-net-badge" /></a></p>
-<p>The <a href="https://docs.rs/url/*/url/struct.Url.html"><code>Url</code></a> struct exposes various methods to extract information about the URL
-it represents.</p>
-<pre><pre class="playground"><code class="language-rust edition2021">use url::{Url, Host, ParseError};
+    async fn update_location(
+        &amp;self,
+        driver_id: u32,
+        lat: f64,
+        lng: f64,
+    ) -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+        self.sender
+            .send(Message::UpdateLocation {
+                driver_id,
+                lat,
+                lng,
+            })
+            .await?;
+        Ok(())
+    }
 
-fn main() -&gt; Result&lt;(), ParseError&gt; {
-    let s = "ftp://rust-lang.org/examples";
+    async fn get_driver_status(
+        &amp;self,
+        driver_id: u32,
+    ) -&gt; Result&lt;Option&lt;DriverStatus&gt;, Box&lt;dyn std::error::Error&gt;&gt; {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(Message::GetDriverStatus {
+                driver_id,
+                respond_to: tx,
+            })
+            .await?;
+        Ok(rx.await?)
+    }
+}
 
-    let url = Url::parse(s)?;
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let handle = DriverHandle::new();
 
-    assert_eq!(url.scheme(), "ftp");
-    assert_eq!(url.host(), Some(Host::Domain("rust-lang.org")));
-    assert_eq!(url.port_or_known_default(), Some(21));
-    println!("The origin is as expected!");
+    // Multiple clones can be sent to different tasks.
+    let h1 = handle.clone();
+    let h2 = handle.clone();
 
-    Ok(())
-}</code></pre></pre>
-<p><a href="https://docs.rs/url/*/url/struct.Url.html#method.origin"><code>origin</code></a> produces the same result.</p>
-<pre><pre class="playground"><code class="language-rust edition2021">use anyhow::Result;
-use url::{Url, Origin, Host};
+    let task1 = tokio::spawn(async move {
+        h1.update_location(1, 40.7128, -74.0060).await.unwrap();
+        h1.update_location(1, 40.7130, -74.0062).await.unwrap();
+    });
 
-fn main() -&gt; Result&lt;()&gt; {
-    let s = "ftp://rust-lang.org/examples";
+    let task2 = tokio::spawn(async move {
+        h2.update_location(2, 34.0522, -118.2437).await.unwrap();
+    });
 
-    let url = Url::parse(s)?;
+    task1.await?;
+    task2.await?;
 
-    let expected_scheme = "ftp".to_owned();
-    let expected_host = Host::Domain("rust-lang.org".to_owned());
-    let expected_port = 21;
-    let expected = Origin::Tuple(expected_scheme, expected_host, expected_port);
+    let status = handle.get_driver_status(1).await?;
+    println!("Driver 1: {:?}", status);
 
-    let origin = url.origin();
-    assert_eq!(origin, expected);
-    println!("The origin is as expected!");
+    let status = handle.get_driver_status(2).await?;
+    println!("Driver 2: {:?}", status);
 
-    Ok(())
-}</code></pre></pre>
-<h2 id="remove-fragment-identifiers-and-query-pairs-from-a-url"><a class="header" href="#remove-fragment-identifiers-and-query-pairs-from-a-url">Remove fragment identifiers and query pairs from a URL</a></h2>
-<p><a href="https://docs.rs/url/"><img src="https://img.shields.io/crates/v/url.svg?label=url" alt="url-badge" /></a> <a href="https://crates.io/categories/network-programming"><img src="https://img.shields.io/badge/net--x.svg?style=social" alt="cat-net-badge" /></a></p>
-<p>Parses <a href="https://docs.rs/url/*/url/struct.Url.html"><code>Url</code></a> and slices it with <a href="https://docs.rs/url/*/url/enum.Position.html"><code>url::Position</code></a> to strip unneeded URL parts.</p>
-<pre><pre class="playground"><code class="language-rust edition2018">use url::{Url, Position, ParseError};
+    let status = handle.get_driver_status(99).await?;
+    println!("Driver 99: {:?}", status);
 
-fn main() -&gt; Result&lt;(), ParseError&gt; {
-    let parsed = Url::parse("https://github.com/rust-lang/rust/issues?labels=E-easy&amp;state=open")?;
-    let cleaned: &amp;str = &amp;parsed[..Position::AfterPath];
-    println!("cleaned: {}", cleaned);
     Ok(())
 }</code></pre></pre>
 <!--
@@ -296,11 +333,11 @@ Keep lines sorted.
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../web/scraping.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../concurrency/parallel.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../web/mime.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../concurrency/custom_future.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -310,11 +347,11 @@ Keep lines sorted.
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../web/scraping.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../concurrency/parallel.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../web/mime.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../concurrency/custom_future.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
