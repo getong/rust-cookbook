@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Actor Pattern - Rust Cookbook</title>
+        <title>Structured Concurrency - Rust Cookbook</title>
 
 
         <!-- Custom HTML head -->
@@ -130,7 +130,7 @@
                         <a href="https://github.com/rust-lang-nursery/rust-cookbook" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/rust-lang-nursery/rust-cookbook/edit/master/src/concurrency/actor.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/rust-lang-nursery/rust-cookbook/edit/master/src/asynchronous/join.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -159,184 +159,61 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="actor-pattern"><a class="header" href="#actor-pattern">Actor Pattern</a></h1>
-<h2 id="actor-pattern-with-tokio-handleactormessage"><a class="header" href="#actor-pattern-with-tokio-handleactormessage">Actor Pattern with Tokio (Handle/Actor/Message)</a></h2>
-<p><a href="https://docs.rs/tokio/"><img src="https://img.shields.io/crates/v/tokio.svg?label=tokio" alt="tokio-badge" /></a> <a href="https://crates.io/categories/concurrency"><img src="https://img.shields.io/badge/concurrency--x.svg?style=social" alt="cat-concurrency-badge" /></a> <a href="https://crates.io/categories/rust-patterns"><img src="https://img.shields.io/badge/rust_patterns--x.svg?style=social" alt="cat-rust-patterns-badge" /></a></p>
-<p>A common pattern for managing shared mutable state without <code>Arc&lt;Mutex&lt;T&gt;&gt;</code> is the
-actor pattern, popularized by <a href="https://ryhl.io/blog/actors-with-tokio/">Alice Ryhl</a>. An <strong>actor</strong> is a struct that owns its
-data and runs inside a single spawned task. A clonable <strong>handle</strong> holds an
-<a href="https://docs.rs/tokio/latest/tokio/sync/mpsc/struct.Sender.html"><code>mpsc::Sender</code></a> and is the public API. <strong>Messages</strong> are an enum describing every
-command the actor can process.</p>
-<p>Because only one task ever accesses the data, there is no locking. Request–response
-pairs use a <a href="https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html"><code>oneshot</code></a> channel embedded in the message variant.</p>
-<pre><pre class="playground"><code class="language-rust edition2021">use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+                        <h1 id="structured-concurrency"><a class="header" href="#structured-concurrency">Structured Concurrency</a></h1>
+<p>When your program runs multiple tasks at the same time, you need a way to keep track of them,
+know when they finish, collect their results, and clean up if something goes wrong.
+This section shows how to do that.</p>
+<h2 id="join-sets"><a class="header" href="#join-sets">Join Sets</a></h2>
+<p><a href="https://docs.rs/tokio/"><img src="https://img.shields.io/crates/v/tokio.svg?label=tokio" alt="tokio-badge" /></a></p>
+<p>A <a href="https://docs.rs/tokio/*/tokio/task/struct.JoinSet.html"><code>JoinSet</code></a> is a container that holds a group of non-blocking tasks running at the same time.
+You add tasks to it, and then you can wait for them to finish one by one. When a task finishes,
+you can grab its result. If you throw away the JoinSet before all tasks are done, every
+unfinished task is cancelled automatically.</p>
+<p>In this example, five jobs are created and added to a JoinSet. Each job does some work on its own,
+and the program waits until all of them are done before moving on.</p>
+<pre><pre class="playground"><code class="language-rust edition2018">use tokio::task::JoinSet;
 
-#[derive(Debug, Error)]
-enum ActorError {
-    #[error("failed to send message to actor")]
-    Send(#[from] mpsc::error::SendError&lt;Message&gt;),
-    #[error("actor dropped response channel")]
-    Recv(#[from] oneshot::error::RecvError),
-    #[error("task failed")]
-    Join(#[from] tokio::task::JoinError),
+struct Job {
+    id: usize,
+    data: String,
 }
 
-// The Message enum represents commands sent to the actor.
-enum Message {
-    UpdateLocation {
-        driver_id: u32,
-        lat: f64,
-        lng: f64,
-    },
-    GetDriverStatus {
-        driver_id: u32,
-        respond_to: oneshot::Sender&lt;Option&lt;DriverStatus&gt;&gt;,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct DriverStatus {
-    driver_id: u32,
-    lat: f64,
-    lng: f64,
-    update_count: u64,
-}
-
-// The Actor: a struct that owns data and lives inside a spawned task.
-// No Arc&lt;Mutex&gt; needed—only one task accesses the data.
-struct DriverActor {
-    receiver: mpsc::Receiver&lt;Message&gt;,
-    drivers: std::collections::HashMap&lt;u32, DriverStatus&gt;,
-}
-
-impl DriverActor {
-    fn new(receiver: mpsc::Receiver&lt;Message&gt;) -&gt; Self {
-        Self {
-            receiver,
-            drivers: std::collections::HashMap::new(),
-        }
+impl Job {
+    fn new(id: usize) -&gt; Self {
+        let data = "d".repeat(id);
+        Self { id, data }
     }
 
-    async fn run(&amp;mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            self.handle_message(msg);
-        }
-    }
-
-    fn handle_message(&amp;mut self, msg: Message) {
-        match msg {
-            Message::UpdateLocation {
-                driver_id,
-                lat,
-                lng,
-            } =&gt; {
-                let status = self
-                    .drivers
-                    .entry(driver_id)
-                    .or_insert(DriverStatus {
-                        driver_id,
-                        lat: 0.0,
-                        lng: 0.0,
-                        update_count: 0,
-                    });
-                status.lat = lat;
-                status.lng = lng;
-                status.update_count += 1;
-            }
-            Message::GetDriverStatus {
-                driver_id,
-                respond_to,
-            } =&gt; {
-                let status = self.drivers.get(&amp;driver_id).cloned();
-                // Ignore send errors if the caller dropped the receiver.
-                let _ = respond_to.send(status);
-            }
-        }
-    }
-}
-
-// The Handle: a clonable struct that holds an mpsc::Sender.
-// This is what you pass around the application.
-#[derive(Clone)]
-struct DriverHandle {
-    sender: mpsc::Sender&lt;Message&gt;,
-}
-
-impl DriverHandle {
-    fn new() -&gt; Self {
-        let (sender, receiver) = mpsc::channel(32);
-        let mut actor = DriverActor::new(receiver);
-        tokio::spawn(async move { actor.run().await });
-        Self { sender }
-    }
-
-    async fn update_location(
-        &amp;self,
-        driver_id: u32,
-        lat: f64,
-        lng: f64,
-    ) -&gt; Result&lt;(), ActorError&gt; {
-        self.sender
-            .send(Message::UpdateLocation {
-                driver_id,
-                lat,
-                lng,
-            })
-            .await?;
-        Ok(())
-    }
-
-    async fn get_driver_status(
-        &amp;self,
-        driver_id: u32,
-    ) -&gt; Result&lt;Option&lt;DriverStatus&gt;, ActorError&gt; {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(Message::GetDriverStatus {
-                driver_id,
-                respond_to: tx,
-            })
-            .await?;
-        Ok(rx.await?)
+    async fn process(&amp;mut self) {
+        // do some work, like fetching more data over the network
+        self.data = self.data.replace("d", "x");
+        println!("Id {} -&gt; {}", self.id, self.data);
     }
 }
 
 #[tokio::main]
-async fn main() -&gt; Result&lt;(), ActorError&gt; {
-    let handle = DriverHandle::new();
+async fn main() {
+    let mut set = JoinSet::new();
+    const JOB_COUNT: usize = 5;
+    let jobs = (0..JOB_COUNT).map(Job::new).collect::&lt;Vec&lt;Job&gt;&gt;();
 
-    // Multiple clones can be sent to different tasks.
-    let h1 = handle.clone();
-    let h2 = handle.clone();
-
-    let task1 = tokio::spawn(async move {
-        h1.update_location(1, 40.7128, -74.0060).await?;
-        h1.update_location(1, 40.7130, -74.0062).await?;
-        Ok::&lt;(), ActorError&gt;(())
-    });
-
-    let task2 = tokio::spawn(async move {
-        h2.update_location(2, 34.0522, -118.2437).await?;
-        Ok::&lt;(), ActorError&gt;(())
-    });
-
-    task1.await??;
-    task2.await??;
-
-    if let Some(s) = handle.get_driver_status(1).await? {
-        println!("Driver {}: ({}, {}), updates: {}", s.driver_id, s.lat, s.lng, s.update_count);
+    for mut job in jobs {
+        set.spawn(async move { job.process().await });
     }
 
-    if let Some(s) = handle.get_driver_status(2).await? {
-        println!("Driver {}: ({}, {}), updates: {}", s.driver_id, s.lat, s.lng, s.update_count);
+    let mut complete = 0usize;
+    while set.join_next().await.is_some() { // wait for each job to finish
+        complete += 1;
     }
 
-    let missing = handle.get_driver_status(99).await?;
-    println!("Driver 99: {:?}", missing);
-
-    Ok(())
+    assert_eq!(complete, JOB_COUNT);
 }</code></pre></pre>
+<blockquote>
+<p>Add <code>tokio</code> to <code>Cargo.toml</code> with the <a href="https://docs.rs/crate/tokio/*/features#macros"><code>macros</code></a> and <a href="https://docs.rs/crate/tokio/*/features#rt"><code>rt</code></a> features enabled.</p>
+<pre><code class="language-toml">[dependencies]
+tokio = { version = "*", features = ["macros", "rt"] }
+</code></pre>
+</blockquote>
 <!--
 Links, in a few categories. Follow the existing structure.
 Keep lines sorted.
@@ -348,11 +225,11 @@ Keep lines sorted.
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../concurrency/parallel.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../asynchronous/ftc.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../concurrency/custom_future.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../cli.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -362,11 +239,11 @@ Keep lines sorted.
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../concurrency/parallel.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../asynchronous/ftc.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../concurrency/custom_future.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../cli.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
